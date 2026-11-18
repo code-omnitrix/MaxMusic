@@ -75,10 +75,52 @@ jobs:
           exclude_inputs: bundle_id,display_name,enable_rymd,enable_ytmabc,enable_youmusicpip,enable_volumeboostyt
 
       - name: Validate IPA URL
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
         run: |
-          curl -L -r 0-1023 -o sample.part "${{ inputs.ipa_url }}" > /dev/null 2>&1
-          
-          file_type=$(file --mime-type -b sample.part)
+          if [[ -z "$IPA_URL" ]]; then
+            echo "::error::Validation failed: No IPA URL was provided."
+            exit 1
+          fi
+
+          if [[ "$IPA_URL" =~ ^https://filebin\.net/([^/?]+)/?$ ]]; then
+            BIN_ID="${BASH_REMATCH[1]}"
+            if ! curl --fail --location --retry 3 --header "Accept: application/json" --output filebin.json "$IPA_URL"; then
+              echo "::error::Validation failed: The Filebin bin could not be read."
+              exit 1
+            fi
+
+            IPA_URL=$(python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+
+          with open("filebin.json", encoding="utf-8") as response:
+              files = json.load(response).get("files", [])
+
+          filename = next(
+              (item["filename"] for item in files if item.get("filename", "").lower().endswith(".ipa")),
+              None,
+          )
+          if filename:
+              bin_id = os.environ["BIN_ID"]
+              print("https://filebin.net/" + bin_id + "/" + urllib.parse.quote(filename))
+          PY
+            )
+            if [[ -z "$IPA_URL" ]]; then
+              echo "::error::Validation failed: The Filebin bin contains no IPA file."
+              exit 1
+            fi
+          fi
+
+          echo "IPA_URL=$IPA_URL" >> "$GITHUB_ENV"
+
+          if ! curl --fail --location --retry 3 --output ytm.ipa "$IPA_URL"; then
+            echo "::error::Validation failed: The IPA URL could not be downloaded."
+            exit 1
+          fi
+
+          file_type=$(file --mime-type -b ytm.ipa)
 
           if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
             echo "::error::Validation failed: The file is not a valid IPA file. Detected type: $file_type."
@@ -123,9 +165,6 @@ jobs:
 
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
-
-      - name: Download YouTube Music
-        run: wget "${{ inputs.ipa_url }}" --no-verbose -O ytm.ipa
 
       - name: Get YouTube Music Version 
         run: |
